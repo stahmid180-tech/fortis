@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duo Security Vault</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --card-bg: #161b22;
+            --accent: #58a6ff;
+            --text: #c9d1d9;
+            --danger: #f85149;
+            --success: #2ea043;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .vault-container {
+            width: 100%;
+            max-width: 500px;
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            border: 1px solid #30363d;
+        }
+        h1, h2 { text-align: center; color: #fff; }
+        .subtitle { text-align: center; color: #8b949e; font-size: 14px; margin-top: -10px; margin-bottom: 25px; }
+        .auth-section, .vault-section { display: flex; flex-direction: column; gap: 15px; }
+        .hidden { display: none !important; }
+        .input-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 14px; color: #8b949e; font-weight: 600; }
+        input[type="password"], input[type="text"] {
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            color: #fff;
+            font-size: 16px;
+            text-align: center;
+            letter-spacing: 2px;
+        }
+        button {
+            background-color: var(--accent);
+            color: #fff;
+            border: none;
+            padding: 14px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        .btn-lock { background-color: var(--danger); }
+        .file-zone {
+            border: 2px dashed #30363d;
+            padding: 20px;
+            text-align: center;
+            border-radius: 8px;
+            cursor: pointer;
+            background: #21262d;
+        }
+        .file-list { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+        .file-item {
+            background: #21262d;
+            padding: 12px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #30363d;
+        }
+        .file-info { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+        .file-name { color: #fff; font-weight: 500; font-size: 14px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        .file-meta { font-size: 11px; color: #8b949e; }
+        .action-btn { padding: 6px 12px; font-size: 12px; width: auto; }
+    </style>
+</head>
+<body>
+
+<div class="vault-container">
+    <h1>🔒 Duo Security</h1>
+    <p class="subtitle">Dual-Custody End-to-End Encrypted Vault</p>
+
+    <!-- STEP 1: AUTHENTICATION INTERFACE -->
+    <div id="authSection" class="auth-section">
+        <p style="text-align: center; font-size: 14px; color: #8b949e;">Both partners must enter their unique secret PINs simultaneously to generate the master decryption key.</p>
+        <div class="input-group">
+            <label>Partner 1 PIN</label>
+            <input type="password" id="pinA" placeholder="••••" maxlength="8">
+        </div>
+        <div class="input-group">
+            <label>Partner 2 PIN</label>
+            <input type="password" id="pinB" placeholder="••••" maxlength="8">
+        </div>
+        <button id="unlockBtn" onclick="initializeVault()">Unlock Joint Vault</button>
+    </div>
+
+    <!-- STEP 2: LOCKED VAULT INTERFACE -->
+    <div id="vaultSection" class="vault-section hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0; color: var(--success);">✓ Vault Decrypted</h3>
+            <button class="action-btn btn-lock" onclick="lockVault()">Lock Vault</button>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid #30363d; margin: 15px 0;">
+
+        <!-- File Upload Handling -->
+        <label>Securely Encrypt & Add File</label>
+        <div class="file-zone" onclick="document.getElementById('fileInput').click()">
+            <span>Click to select Photos or Videos</span>
+            <input type="file" id="fileInput" class="hidden" onchange="handleFileUpload(this)">
+        </div>
+
+        <h3>Stored Vault Items</h3>
+        <div id="fileList" class="file-list">
+            <!-- Dynamically populated files appear here -->
+        </div>
+    </div>
+</div>
+
+<script>
+    let masterKey = null;
+    let database = [];
+
+    // Load existing database items from LocalStorage (persists on the phone)
+    if(localStorage.getItem('duo_vault_db')) {
+        database = JSON.parse(localStorage.getItem('duo_vault_db'));
+    }
+
+    // 1. Core Cryptographic Key Generator (Combines PIN A + PIN B)
+    async function deriveKey(pinA, pinB) {
+        const combinedSecret = pinA + "::DUO_SALT_2026::" + pinB;
+        const encoder = new TextEncoder();
+        const data = encoder.encode(combinedSecret);
+        
+        // Hash the combination using SHA-256 to create a clean 256-bit cryptographic key
+        const hash = await crypto.subtle.digest('SHA-256', data);
+        
+        return await crypto.subtle.importKey(
+            'raw', 
+            hash, 
+            { name: 'AES-GCM' }, 
+            false, 
+            ['encrypt', 'decrypt']
+        );
+    }
+
+    // 2. Unlock System
+    async function initializeVault() {
+        const pinA = document.getElementById('pinA').value;
+        const pinB = document.getElementById('pinB').value;
+
+        if(!pinA || !pinB) {
+            alert("Both distinct user PINs are mandatory to form the decryption matrix.");
+            return;
+        }
+
+        try {
+            masterKey = await deriveKey(pinA, pinB);
+            document.getElementById('authSection').classList.add('hidden');
+            document.getElementById('vaultSection').classList.remove('hidden');
+            renderFileList();
+        } catch (e) {
+            alert("Cryptographic alignment failed. Ensure PIN arrays are correct.");
+        }
+    }
+
+    // 3. File Processing & End-to-End Encryption
+    function handleFileUpload(element) {
+        const file = element.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+            const arrayBuffer = e.target.result;
+            const iv = crypto.getRandomValues(new Uint8Array(12)); // Initialization Vector for randomness
+
+            // Encrypting raw data
+            const encryptedBuffer = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: iv },
+                masterKey,
+                arrayBuffer
+            );
+
+            // Convert to string safely to store locally/anonymously without file meta ownership tags
+            const base64Data = btoa(String.fromCharCode(...new Uint8Array(encryptedBuffer)));
+            const base64Iv = btoa(String.fromCharCode(...iv));
+
+            const newFileRecord = {
+                id: Date.now() + Math.random().toString(36).substring(2, 7),
+                name: file.name,
+                type: file.type,
+                payload: base64Data,
+                iv: base64Iv
+            };
+
+            database.push(newFileRecord);
+            localStorage.setItem('duo_vault_db', JSON.stringify(database));
+            renderFileList();
+            element.value = ''; // Reset file input selector
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // 4. File Decryption & On-Demand Viewing
+    async function downloadAndDecrypt(fileId) {
+        const item = database.find(f => f.id === fileId);
+        if(!item) return;
+
+        try {
+            // Decode back from Base64 tracking data
+            const encryptedData = new Uint8Array(atob(item.payload).split('').map(c => c.charCodeAt(0)));
+            const iv = new Uint8Array(atob(item.iv).split('').map(c => c.charCodeAt(0)));
+
+            // Attempt decryption using current active key frame
+            const decryptedBuffer = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: iv },
+                masterKey,
+                encryptedData
+            );
+
+            // Serve decrypted content as localized object URL safely to browser context
+            const blob = new Blob([decryptedBuffer], { type: item.type });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = item.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch(err) {
+            alert("Decryption failed. The active key cannot crack this file payload—it might have been encrypted under different PIN values.");
+        }
+    }
+
+    // 5. Interface UI Refreshes & Memory Purges
+    function renderFileList() {
+        const container = document.getElementById('fileList');
+        container.innerHTML = '';
+
+        if(database.length === 0) {
+            container.innerHTML = `<p style="text-align:center; font-size:13px; color:#8b949e;">Vault is currently empty.</p>`;
+            return;
+        }
+
+        database.forEach(file => {
+            const div = document.createElement('div');
+            div.className = 'file-item';
+            div.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-meta">${file.type || 'Encrypted Binary'}</span>
+                </div>
+                <button class="action-btn" onclick="downloadAndDecrypt('${file.id}')">View</button>
+            `;
+            container.appendChild(div);
+        });
+    }
+
+    function lockVault() {
+        masterKey = null; // Clear key from system memory instantly
+        document.getElementById('pinA').value = '';
+        document.getElementById('pinB').value = '';
+        document.getElementById('authSection').classList.remove('hidden');
+        document.getElementById('vaultSection').classList.add('hidden');
+    }
+</script>
+
+</body>
+</html>
